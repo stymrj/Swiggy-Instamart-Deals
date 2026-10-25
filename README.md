@@ -45,6 +45,10 @@ Hunter can send new deals, price drops and cheaper saved items to your Telegram.
 
 Each deal is sent once, and again only if its price drops further. Use the userscript for alerts: some shops block bookmarklets from calling Telegram, while the userscript sends through `GM_xmlhttpRequest`. The token is stored only in your browser.
 
+## Telegram bot
+
+Instamart signs every request with values generated inside its own app, so a server cannot ask it for products the way the other PriceDrop Hunter bots do, and this project does not try to imitate those signatures. Telegram alerts for Instamart therefore come from the browser tool: open Hunter on swiggy.com/instamart, connect Telegram in the sidebar, and browse or use Auto-scroll. Deals are sent as they are captured.
+
 ## How it gets data
 
 Instamart signs its own requests, so this tool does not make any. Instead it listens to the product lists the Instamart page already loads in your tab and reads them. Nothing is sent anywhere and no requests are altered.
