@@ -23,7 +23,7 @@ Collects Swiggy Instamart products as you browse, ranks them by real savings, an
 
 **Bookmarklet (desktop).** Run `node build.js`, open `index.html`, and drag the button to your bookmarks bar. Open swiggy.com and click the bookmark.
 
-**Bookmarklet (mobile).** Copy the code from the page, create a bookmark, and paste the code as its address. Run it from the address bar on swiggy.com.
+**Bookmarklet (mobile).** On the install page, tap **Copy mobile loader**. It is a bookmark of about 380 characters that loads the latest version from GitHub Pages, so it fits on any phone. Create a bookmark, paste it as the address, and run it from the address bar on swiggy.com. The full bookmarklet (about 45 KB, no network needed) is in `dist/bookmarklet.txt`.
 
 **Userscript.** Install `dist/instamart-deals.user.js` in Tampermonkey or Violentmonkey. A small Deals button appears on every swiggy.com page.
 
