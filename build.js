@@ -1,0 +1,42 @@
+// Builds dist/bookmarklet.txt and index.html (from src/index.tpl.html).
+// Usage: node build.js   (uses terser if available via npx, else ships unminified)
+const fs = require('fs'), path = require('path'), { execSync } = require('child_process');
+const src = path.join(__dirname, 'src/deals.js');
+let code = fs.readFileSync(src, 'utf8');
+try {
+  code = execSync(`npx --yes terser "${src}" --compress --mangle`, { encoding: 'utf8', maxBuffer: 1 << 24, stdio: ['ignore', 'pipe', 'ignore'] });
+  console.log('minified with terser');
+} catch (e) {
+  code = code.replace(/^\s*\/\/.*$/gm, '').replace(/\n\s*\n/g, '\n');
+  console.log('terser unavailable, comments stripped only');
+}
+const bookmarklet = 'javascript:' + encodeURIComponent('(function(){' + code + '})()');
+fs.mkdirSync(path.join(__dirname, 'dist'), { recursive: true });
+fs.writeFileSync(path.join(__dirname, 'dist/bookmarklet.txt'), bookmarklet);
+fs.copyFileSync(src, path.join(__dirname, 'dist/deals.js'));
+// Tampermonkey/Violentmonkey build: loads quietly, adds a floating launcher button.
+const header = `// ==UserScript==
+// @name         PriceDrop Hunter for Swiggy Instamart
+// @namespace    instamart-deals
+// @version      2.0.0
+// @description  Collect Swiggy Instamart deals as you browse, rank them by real savings, and track price drops between visits.
+// @match        https://www.swiggy.com/*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+`;
+const launcher = `
+(function(){
+  if(!window.__IMS__) return;
+  window.__IMS__.hide();
+  var b=document.createElement('button');
+  b.textContent='Deals';
+  b.style.cssText='position:fixed;right:16px;bottom:16px;z-index:2147483646;background:#d9600b;color:#fff;font:600 14px system-ui,sans-serif;border:0;border-radius:8px;padding:11px 16px;box-shadow:0 2px 10px rgba(0,0,0,.25);cursor:pointer';
+  b.onclick=function(){window.__IMS__.toggle()};
+  document.body.appendChild(b);
+})();
+`;
+fs.writeFileSync(path.join(__dirname, 'dist/instamart-deals.user.js'), header + code + '\n' + launcher);
+const tpl =fs.readFileSync(path.join(__dirname, 'src/index.tpl.html'), 'utf8');
+fs.writeFileSync(path.join(__dirname, 'index.html'), tpl.replace('__BOOKMARKLET__', bookmarklet.replace(/&/g, '&amp;').replace(/"/g, '&quot;')));
+console.log('bookmarklet size:', (bookmarklet.length / 1024).toFixed(1), 'KB');
