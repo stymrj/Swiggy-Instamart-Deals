@@ -32,24 +32,31 @@
     KWG('care', 'Personal Care', ['shampoo', 'soap', 'oral care'])
   ];
   const pageLabel = () => (document.title.split(/[|\-–]/)[0] || 'Instamart').trim() || 'Instamart';
-  const imgUrl = i => !i ? '' : /^https?:/.test(i) ? i : 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,h_300/' + i;
+  const imgUrl = i => !i ? '' : /^https?:/.test(i) ? i : 'https://instamart-media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,h_300/' + i;
+  // Prices come as {units, nanos} objects; older responses used plain numbers.
+  const amt = x => x && typeof x === 'object' && x.units != null ? +x.units + (+x.nanos || 0) / 1e9 : price(x);
   function extract(json, cat) {
     const out = [], seen = new Set();
     (function walk(o, d) {
-      if (!o || typeof o !== 'object' || d > 18) return;
+      if (!o || typeof o !== 'object' || d > 24) return;
       if (Array.isArray(o)) { for (const x of o) walk(x, d + 1); return; }
-      if (Array.isArray(o.variations) && o.variations.length && (o.display_name || o.name)) {
+      if (Array.isArray(o.variations) && o.variations.length && (o.displayName || o.display_name || o.name)) {
         for (const v of o.variations) {
-          const pr = v.price || {}, sell = price(pr.offer_price != null ? pr.offer_price : pr.store_price);
+          const pr = v.price || {};
+          const sell = amt(pr.offerPrice) || amt(pr.offer_price != null ? pr.offer_price : pr.store_price);
           if (!sell) continue;
-          let mrp = price(pr.mrp); if (mrp < sell) mrp = sell;
-          const pid = String(v.id || v.sku_id || o.product_id || (o.display_name + sell));
+          let mrp = amt(pr.mrp); if (mrp < sell) mrp = sell;
+          const pid = String(v.skuId || v.spinId || v.id || o.productId || o.product_id || (o.displayName + sell));
           if (seen.has(pid)) continue; seen.add(pid);
-          const qty = v.quantity || v.sku_quantity_with_combo || '';
-          const title = String(o.display_name || o.name) + (qty ? ' · ' + qty : '');
+          const qty = v.quantityDescription || v.quantity || '';
+          const name = v.displayName || o.displayName || o.display_name || o.name;
+          const title = String(name) + (qty ? ' · ' + qty : '');
           const inv = v.inventory || {};
-          out.push({ id: pid, title, brand: String(v.brand || o.brand || guessBrand(title)), price: sell, mrp, disc: mrp > sell ? Math.round((mrp - sell) / mrp * 100) : 0, save: mrp - sell,
-            img: imgUrl(v.images && v.images[0]), url: 'https://www.swiggy.com/instamart/item/' + (o.product_id || v.id || ''), inStock: !(inv.in_stock === false || v.in_stock === false), cat });
+          const oos = inv.inStock === false || inv.in_stock === false || String(o.inStock) === 'false' || v.in_stock === false;
+          const img = (v.imageIds && v.imageIds[0]) || (v.images && v.images[0]) || (v.medias && v.medias[0] && v.medias[0].id);
+          const top = v.superCategory || cat, sub = v.category || v.subCategoryType || '';
+          out.push({ id: pid, title, brand: String(v.brandName || o.brand || v.brand || guessBrand(title)), price: sell, mrp, disc: mrp > sell ? Math.round((mrp - sell) / mrp * 100) : 0, save: mrp - sell,
+            img: imgUrl(img), url: 'https://www.swiggy.com/instamart/item/' + (o.productId || o.product_id || v.id || ''), inStock: !oos, cat: sub ? top + ' › ' + sub : top });
         }
         return;
       }
@@ -96,6 +103,8 @@
         recordPrices();
         store.lastScan = Date.now(); saveSoon(); scheduleRender(); notifySoon();
       };
+      // Products already rendered into the page when it loaded.
+      try { if (W.___INITIAL_STATE___) push(W.___INITIAL_STATE___); } catch (e) { /* ignore */ }
       const of = W.fetch;
       W.fetch = function () {
         const p = of.apply(this, arguments);
@@ -418,9 +427,11 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
 .more{display:inline-flex;align-items:center;gap:5px;color:var(--pr);font-weight:800;font-size:13px;white-space:nowrap}
 .hs{display:grid;grid-auto-flow:column;grid-auto-columns:210px;gap:14px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin}
 .mob{display:none}
+.scrim{position:absolute;inset:0;background:rgba(10,12,16,.45);z-index:4;animation:fade .2s}.scrim.side{display:none;z-index:3}@keyframes fade{from{opacity:0}}
+.body{position:relative}
 @media(max-width:900px){
  aside{position:absolute;z-index:4;top:0;bottom:0;left:0;transform:translateX(-105%);transition:transform .22s;width:min(320px,88%);box-shadow:16px 0 40px rgba(0,0,0,.16);padding:18px 16px 40px}
- aside.open{transform:none}.menu-btn{display:inline-flex}.mob{display:flex}
+ aside.open{transform:none}.menu-btn{display:inline-flex}.mob{display:flex}.scrim.side{display:block}
  header{padding:10px 12px;gap:8px;height:auto;flex-wrap:wrap}
  .logo{margin-right:0;min-width:0}.logo small,.logo .mk,.search kbd,.hb .lb,.sb .lb,[data-act=bell].ib,[data-act=theme].ib{display:none}
  .logo b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -584,7 +595,7 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
  <button class="ib" data-act="theme" title="${dark ? 'Light' : 'Dark'} mode">${ic(dark ? 'sun' : 'moon')}</button>
  <button class="hb" data-act="panel" title="Shopping list">${ic('bag')}<span class="lb">List</span>${count ? `<span class="n">${count}</span>` : ''}</button>
  <button class="ib" data-act="close" title="Close (Esc)">${ic('x')}</button>${S.scanning ? `<div class="prog" style="width:${pct}%"></div>` : ''}</header>
- <div class="body">${sidebar()}${mainView()}</div>${drawer()}<div class="toast" id="toast"></div>`;
+ <div class="body">${sideOpen ? '<div class="scrim side" data-act="side"></div>' : ''}${sidebar()}${mainView()}</div>${S.panel ? '<div class="scrim" data-act="closepanel"></div>' : ''}${drawer()}<div class="toast" id="toast"></div>`;
     const m = root.getElementById('main'); if (m) m.scrollTop = keepScroll;
     const a = root.querySelector('aside'); if (a) a.scrollTop = sideScroll;
     if (focused === 'q') { const i = root.querySelector('[data-in=q]'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
