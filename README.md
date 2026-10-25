@@ -27,8 +27,6 @@ Collects Swiggy Instamart products as you browse, ranks them by real savings, an
 
 **Userscript.** Install `dist/instamart-deals.user.js` in Tampermonkey or Violentmonkey. A small Deals button appears on every swiggy.com page.
 
-**Demo.** Use "Try the demo" on the install page to explore the interface with sample data.
-
 ## Keyboard shortcuts
 
 `/` search, `S` scan or stop, `Esc` close.
