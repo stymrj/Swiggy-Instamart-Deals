@@ -22,7 +22,9 @@ const header = `// ==UserScript==
 // @description  Collect Swiggy Instamart deals as you browse, rank them by real savings, and track price drops between visits.
 // @match        https://www.swiggy.com/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      api.telegram.org
 // ==/UserScript==
 `;
 const launcher = `
