@@ -1,11 +1,13 @@
 # PriceDrop Hunter for Swiggy Instamart
 
-Collects Swiggy Instamart products as you browse, ranks them by real savings, and tracks price changes between visits. It runs in your own browser as a bookmarklet or userscript. Nothing is uploaded and there is no account.
+Collects Swiggy Instamart products from the pages you open, and shows the biggest discounts first. It runs in your own browser as a bookmarklet or userscript. Nothing is uploaded and there is no account.
 
 **Live page:** https://stymrj.github.io/Swiggy-Instamart-Deals/
 
 ## Features
 
+- Opens with the biggest discounts, across every category, scanned by itself
+- Best deals of each category in one swipeable row, with See all
 - Ranks by percent off and rupees saved together
 - Labels products that are new, cheaper than last time, or at their lowest price ever
 - Price history sparkline on every product you have seen before
@@ -49,13 +51,12 @@ Instamart signs every request with values generated inside its own app, so a ser
 
 ## How it gets data
 
-Instamart signs its own requests, so this tool does not make any. Instead it listens to the product lists the Instamart page already loads in your tab and reads them. Nothing is sent anywhere and no requests are altered.
+Instamart signs its own requests, so this tool does not make any. It reads the products already on the page when you open Hunter, then the product lists the page loads as you browse. Nothing is sent anywhere and no requests are altered.
 
 ## Limitations
 
-- You only see what the page loads: open categories or use Auto-scroll to collect more.
-- Response shapes are matched generically and have not been verified against every region.
-- Hunter must be opened before browsing so it can listen; reopen it and browse again if you opened it late.
+- You only see what the pages you open contain: open categories or use Auto-scroll to collect more.
+- Open Hunter after the page has loaded, or reopen it on each new category page.
 
 ## Project layout
 
