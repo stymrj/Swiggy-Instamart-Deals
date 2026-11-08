@@ -1,0 +1,62 @@
+{
+  "data": {
+    "widgets": [
+      {
+        "data": {
+          "items": [
+            {
+              "displayName": "Test Rice",
+              "variations": [
+                {
+                  "skuId": "l-rice",
+                  "displayName": "Test Rice",
+                  "brandName": "Test",
+                  "quantityDescription": "1 kg",
+                  "price": {
+                    "mrp": {
+                      "units": 100
+                    },
+                    "offerPrice": {
+                      "units": 70
+                    }
+                  },
+                  "imageIds": [
+                    "rice-img"
+                  ],
+                  "inventory": {
+                    "inStock": true
+                  }
+                }
+              ]
+            },
+            {
+              "displayName": "Test Dal",
+              "variations": [
+                {
+                  "skuId": "l-dal",
+                  "displayName": "Test Dal",
+                  "brandName": "Test",
+                  "quantityDescription": "1 kg",
+                  "price": {
+                    "mrp": {
+                      "units": 150
+                    },
+                    "offerPrice": {
+                      "units": 105
+                    }
+                  },
+                  "imageIds": [
+                    "dal-img"
+                  ],
+                  "inventory": {
+                    "inStock": true
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

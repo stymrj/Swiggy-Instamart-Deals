@@ -1,0 +1,1 @@
+{"description":"Telegram bot for Swiggy Instamart deals (category/collection APIs, no dependencies)","engines":{"node":">=18"},"main":"src/bot.js","name":"instamart-deals-bot-v2","scripts":{"start":"node src/bot.js"},"version":"2.0.0"}

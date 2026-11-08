@@ -1,0 +1,161 @@
+{
+  "data": {
+    "cards": [
+      {
+        "card": {
+          "variations": [
+            {
+              "skuId": "s-atta",
+              "displayName": "Aashirvaad Atta",
+              "brandName": "Aashirvaad",
+              "quantityDescription": "10 kg",
+              "price": {
+                "mrp": {
+                  "units": 549
+                },
+                "offerPrice": {
+                  "units": 419
+                }
+              },
+              "imageIds": [
+                "atta-img"
+              ],
+              "inventory": {
+                "inStock": true
+              }
+            },
+            {
+              "skuId": "s-oil",
+              "displayName": "Fortune Sunflower Oil",
+              "brandName": "Fortune",
+              "quantityDescription": "1 L",
+              "price": {
+                "mrp": {
+                  "units": 200
+                },
+                "offerPrice": {
+                  "units": 129
+                }
+              },
+              "imageIds": [
+                "oil-img"
+              ],
+              "inventory": {
+                "inStock": true
+              }
+            },
+            {
+              "skuId": "s-ghee",
+              "displayName": "Amul Cow Ghee",
+              "brandName": "Amul",
+              "quantityDescription": "1 L",
+              "price": {
+                "mrp": {
+                  "units": 650
+                },
+                "offerPrice": {
+                  "units": 585
+                }
+              },
+              "imageIds": [
+                "ghee-img"
+              ],
+              "inventory": {
+                "inStock": true
+              }
+            },
+            {
+              "skuId": "s-rice",
+              "displayName": "India Gate Basmati Rice",
+              "brandName": "India Gate",
+              "quantityDescription": "5 kg",
+              "price": {
+                "mrp": 899,
+                "offerPrice": 629
+              },
+              "imageIds": [
+                "rice-img"
+              ],
+              "inventory": {
+                "inStock": true
+              }
+            },
+            {
+              "skuId": "s-dal",
+              "displayName": "Tata Toor Dal",
+              "brandName": "Tata Sampann",
+              "quantityDescription": "1 kg",
+              "price": {
+                "mrp": {
+                  "units": 150,
+                  "nanos": 0
+                },
+                "offerPrice": {
+                  "units": 112,
+                  "nanos": 500000000
+                }
+              },
+              "imageIds": [
+                "dal-img"
+              ],
+              "inventory": {
+                "inStock": true
+              }
+            },
+            {
+              "skuId": "s-sugar",
+              "displayName": "Sugar",
+              "brandName": "Generic",
+              "quantityDescription": "1 kg",
+              "price": {
+                "mrp": {
+                  "units": 50
+                },
+                "offerPrice": {
+                  "units": 50
+                }
+              },
+              "imageIds": [
+                "sugar-img"
+              ],
+              "inventory": {
+                "inStock": true
+              }
+            },
+            {
+              "skuId": "s-maggi",
+              "displayName": "Maggi Noodles",
+              "brandName": "Maggi",
+              "quantityDescription": "12 pack",
+              "price": {
+                "mrp": {
+                  "units": 156
+                },
+                "offerPrice": {
+                  "units": 120
+                }
+              },
+              "imageIds": [
+                "maggi-img"
+              ],
+              "inventory": {
+                "inStock": false
+              }
+            },
+            {
+              "skuId": "s-noprice",
+              "displayName": "No Price Item",
+              "brandName": "Test",
+              "quantityDescription": "1 pc",
+              "price": {},
+              "imageIds": [],
+              "inventory": {
+                "inStock": true
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

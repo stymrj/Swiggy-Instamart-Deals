@@ -20,50 +20,231 @@
   const allowed = p => { const t = p.title.toLowerCase(); return !EXCLUDED.some(k => t.includes(k)); };
   const KWG = (id, name, kws) => ({ id, name, subs: kws.map(k => [k, k[0].toUpperCase() + k.slice(1)]) });
 
-  // ───────────────────────── Catalogue ─────────────────────────
-  // Live mode is passive: it reads the product lists the Instamart page itself loads.
-  // Capture mode does not use these groups; they keep the shared sidebar code happy.
-  const GROUPS = [
-    KWG('fresh', 'Fruits & Vegetables', ['fruits', 'vegetables', 'herbs']),
-    KWG('dairy', 'Dairy, Bread & Eggs', ['milk', 'paneer', 'bread', 'eggs']),
-    KWG('staples', 'Atta, Rice & Dals', ['atta', 'rice', 'dal', 'oil']),
-    KWG('snacks', 'Snacks & Munchies', ['chips', 'biscuits', 'namkeen']),
-    KWG('drinks', 'Cold Drinks & Juices', ['soft drinks', 'juice', 'water']),
-    KWG('care', 'Personal Care', ['shampoo', 'soap', 'oral care'])
-  ];
-  const pageLabel = () => (document.title.split(/[|\-–]/)[0] || 'Instamart').trim() || 'Instamart';
-  const imgUrl = i => !i ? '' : /^https?:/.test(i) ? i : 'https://instamart-media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,h_300/' + i;
-  // Prices come as {units, nanos} objects; older responses used plain numbers.
-  const amt = x => x && typeof x === 'object' && x.units != null ? +x.units + (+x.nanos || 0) / 1e9 : price(x);
-  function extract(json, cat) {
-    const out = [], seen = new Set();
-    (function walk(o, d) {
-      if (!o || typeof o !== 'object' || d > 24) return;
-      if (Array.isArray(o)) { for (const x of o) walk(x, d + 1); return; }
-      if (Array.isArray(o.variations) && o.variations.length && (o.displayName || o.display_name || o.name)) {
-        for (const v of o.variations) {
-          const pr = v.price || {};
-          const sell = amt(pr.offerPrice) || amt(pr.offer_price != null ? pr.offer_price : pr.store_price);
-          if (!sell) continue;
-          let mrp = amt(pr.mrp); if (mrp < sell) mrp = sell;
-          const pid = String(v.skuId || v.spinId || v.id || o.productId || o.product_id || (o.displayName + sell));
-          if (seen.has(pid)) continue; seen.add(pid);
-          const qty = v.quantityDescription || v.quantity || '';
-          const name = v.displayName || o.displayName || o.display_name || o.name;
-          const title = String(name) + (qty ? ' · ' + qty : '');
-          const inv = v.inventory || {};
-          const oos = inv.inStock === false || inv.in_stock === false || String(o.inStock) === 'false' || v.in_stock === false;
-          const img = (v.imageIds && v.imageIds[0]) || (v.images && v.images[0]) || (v.medias && v.medias[0] && v.medias[0].id);
-          const top = v.superCategory || cat, sub = v.category || v.subCategoryType || '';
-          out.push({ id: pid, title, brand: String(v.brandName || o.brand || v.brand || guessBrand(title)), price: sell, mrp, disc: mrp > sell ? Math.round((mrp - sell) / mrp * 100) : 0, save: mrp - sell,
-            img: imgUrl(img), url: 'https://www.swiggy.com/instamart/item/' + (o.productId || o.product_id || v.id || ''), inStock: !oos, cat: sub ? top + ' › ' + sub : top });
-        }
-        return;
-      }
-      for (const k in o) walk(o[k], d + 1);
-    })(json, 0);
-    return out;
+// ── v2 Instamart fetch+parse ──
+// Nov 2026 working shape, rewritten for PriceDrop Hunter (the reference
+// implementation is unlicensed, so no code is copied — only the API shape:
+// endpoint paths, query/body fields and header names, re-implemented here).
+// Active scan (new in v2): the bookmarklet now calls Swiggy's own Instamart
+// APIs from inside your logged-in tab, instead of only passively reading
+// pages you happen to open:
+//   GET  /api/instamart/collection/items?collectionId&storeId&primaryStoreId
+//        &secondaryStoreId&offset&serviceLine=INSTAMART
+//   POST /api/instamart/category-listing/filter/v2?...&pageNo&offset
+//        body {categoryName, filterName, filterId, taxonomyType,
+//              items_offset, facets:[], sortAttribute:'discountPercentHighToLow'}
+//   GET  /api/instamart/category-listing/v2?categoryName&taxonomyType&offset
+//        &storeId&primaryStoreId&secondaryStoreId
+// Headers: matcher (generated per request), x-build-version, x-device-id.
+// Store ids are detected from the tab itself (URL, performance entries,
+// page state, storage); the user is only prompted if detection fails.
+// Fallbacks, in order: primary endpoint -> category-listing GET for the same
+// category -> passive capture of the page's own loads (kept from v1).
+// 429/403/5xx responses retry with exponential backoff + jitter (max 3).
+const IM_API = 'https://www.swiggy.com/api/instamart';
+const IM_BUILD_VERSION = '2.363.0';
+const GROUPS = [
+  { id: 'veg', name: 'Fresh Vegetables', cName: 'Fresh Vegetables', tType: 'Speciality taxonomy 1', subs: [{ name: 'Fresh Vegetables', id: '6822eeeded32000001e25aa2' }, { name: 'Leafy and Seasonings', id: '6822eeeded32000001e25aa3' }, { name: 'Exotic Vegetables', id: '6822eeeded32000001e25aa4' }, { name: 'Cuts and sprouts', id: '6822eeeded32000001e25aa6' }] },
+  { id: 'fruits', name: 'Fresh Fruits', cName: 'Fresh Fruits', tType: 'Speciality taxonomy 1', subs: [{ name: 'Fresh Fruits', id: '6822eeeded32000001e25aad' }, { name: 'Seasonal Fruits', id: '6822eeeded32000001e25ab0' }, { name: 'Exotic Fruits', id: '6822eeeded32000001e25ab1' }] },
+  { id: 'dairy', name: 'Dairy, Bread & Eggs', cName: 'Dairy, Bread and Eggs', tType: 'Speciality taxonomy 1', subs: [{ name: 'Dairy' }, { name: 'Bread' }, { name: 'Eggs' }] },
+  { id: 'staples', name: 'Atta, Rice & Dals', cName: 'Atta, Rice and Dal', tType: 'taxonomy 5', subs: [{ name: 'Atta' }, { name: 'Rice' }, { name: 'Dal' }] },
+  { id: 'oils', name: 'Oils & Ghee', cName: 'Oils and Ghee', tType: 'taxonomy 5', subs: [{ name: 'Oil' }, { name: 'Ghee' }] },
+  { id: 'masalas', name: 'Masalas', cName: 'Masalas', tType: 'taxonomy 5', subs: [{ name: 'Masala' }, { name: 'Spices' }] },
+  { id: 'breakfast', name: 'Cereals & Breakfast', cName: 'Cereals and Breakfast', tType: 'taxonomy 5', subs: [{ name: 'Cereals' }, { name: 'Breakfast' }] },
+  { id: 'snacks', name: 'Snacks & Munchies', cName: 'Chips and Namkeens', tType: 'taxonomy 10', subs: [{ name: 'Chips' }, { name: 'Namkeens' }] },
+  { id: 'sweets', name: 'Sweet Corner', cName: 'Sweet Corner', tType: 'taxonomy 10', subs: [{ name: 'Sweets' }, { name: 'Indian Sweets' }] },
+  { id: 'chocolates', name: 'Chocolates', cName: 'Chocolates', tType: 'taxonomy 10', subs: [{ name: 'Chocolates' }] },
+  { id: 'drinks', name: 'Cold Drinks & Juices', cName: 'Cold Drinks and Juices', tType: 'taxonomy 10', subs: [{ name: 'Cold Drinks' }, { name: 'Juices' }] },
+  { id: 'tea', name: 'Tea & Coffee', cName: 'Tea, Coffee and Milk drinks', tType: 'taxonomy 10', subs: [{ name: 'Tea' }, { name: 'Coffee' }] },
+  { id: 'cleaning', name: 'Cleaning Essentials', cName: 'Cleaning Essentials', tType: 'Speciality taxonomy 1', subs: [{ name: 'Cleaning' }] },
+  { id: 'personal', name: 'Bath, Body & Hair', cName: 'Bath, Body and Hair', tType: 'taxonomy 14', subs: [{ name: 'Bath & Body' }, { name: 'Hair Care' }] },
+  { id: 'pharma', name: 'Health & Pharma', cName: 'Health and Pharma', tType: 'taxonomy 14', subs: [{ name: 'Health' }, { name: 'Pharma' }] },
+  { id: 'noice', name: 'The NOICE Store', cName: 'The NOICE Store', campaignType: 'collection', subs: [{ name: 'Top Deals', id: '408822', isCollection: true }, { name: 'NOICE Brand Store', id: '428607', isCollection: true }, { name: 'Dairy, Bread Eggs & More', id: '377503', isCollection: true }, { name: 'Chocolates & Ice Creams', id: '377513', isCollection: true }, { name: 'Munchies', id: '377515', isCollection: true }, { name: 'Atta & Ghee', id: '395522', isCollection: true }, { name: 'Beverages', id: '377517', isCollection: true }, { name: 'Spreads & Dips', id: '377520', isCollection: true }, { name: 'Cakes & Cookies', id: '377510', isCollection: true }, { name: 'Indian Sweets', id: '377514', isCollection: true }, { name: 'Dry Fruits', id: '365176', isCollection: true }, { name: 'Veg Frozen Food', id: '377519', isCollection: true }, { name: 'Non Veg Frozen Food', id: '285297', isCollection: true }] }
+];
+const pageLabel = () => (document.title.split(/[|\-–]/)[0] || 'Instamart').trim() || 'Instamart';
+const imgUrl = i => !i ? '' : /^https?:/.test(i) ? i : 'https://instamart-media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,h_300/' + i;
+// Prices come as {units, nanos} objects; older responses used plain numbers.
+const amt = x => x && typeof x === 'object' && x.units != null ? +x.units + (+x.nanos || 0) / 1e9 : price(x);
+let imDiag = { reason: '', detail: '' };
+let imLastStatus = 0, imRateLimited = false;
+function diagnoseInstamartEmpty(o) {
+  o = o || {};
+  if (o.rateLimited || o.status === 429 || o.status === 403) return 'rate-limited';
+  if (o.status === 401) return 'logged-out';
+  if (o.hasStore === false) return 'no-store';
+  if (!o.items) return 'category-empty';
+  return 'ok';
+}
+function imDiagMessage(reason) {
+  return {
+    'no-store': { title: 'No Instamart store detected', hint: 'Open swiggy.com/instamart with your delivery location set, then scan again — Hunter reads the dark-store id from that page.' },
+    'rate-limited': { title: 'Swiggy rate-limited this tab', hint: 'Wait a minute or two, then scan again. Fewer categories per scan also helps.' },
+    'logged-out': { title: 'Swiggy session expired', hint: 'Reload swiggy.com (log in again if asked), then scan again.' },
+    'category-empty': { title: 'No deals in these categories', hint: 'Try more categories, or lower the minimum discount in the menu.' },
+    '': { title: 'No deals found', hint: 'Try more categories, or lower the minimum discount in the menu.' }
+  }[reason] || { title: 'No deals found', hint: 'Try more categories, or lower the minimum discount in the menu.' };
+}
+function imMatcher() {
+  const r5 = () => Math.floor(10000 + Math.random() * 90000).toString();
+  const raw = r5() + Date.now().toString() + r5();
+  return raw.split('').map(d => (parseInt(d, 10) + 7).toString(36)).join('');
+}
+function imDeviceId() {
+  try {
+    for (const k of ['deviceId', 'device_id', 'x-device-id', 'swiggy_d_id']) { const v = localStorage.getItem(k); if (v && v.length > 10) return v; }
+    const m = document.cookie.match(/(?:_device_id|deviceId|swiggy_d_id)=([^;]+)/);
+    if (m && m[1]) return decodeURIComponent(m[1]);
+  } catch (e) { /* ignore */ }
+  return (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : zUuidFallback();
+  function zUuidFallback() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); }); }
+}
+function imBuildVersion() {
+  try {
+    if (W.__BUILD_VERSION__) return W.__BUILD_VERSION__;
+    if (W.__SWIGGY_GLOBAL__ && W.__SWIGGY_GLOBAL__.buildVersion) return W.__SWIGGY_GLOBAL__.buildVersion;
+    for (const e of performance.getEntries()) { const m = e.name.match(/build[-_]?version[=/:]([0-9.]+)/i); if (m) return m[1]; }
+  } catch (e) { /* ignore */ }
+  return IM_BUILD_VERSION;
+}
+function detectStoreIds(allowPrompt) {
+  let pid = null, secid = null, sid = null;
+  const fromStr = str => {
+    if (!str || typeof str !== 'string') return;
+    try {
+      const q = str.includes('?') ? str.split('?')[1] : (str.includes('=') ? str : '');
+      if (q) { const p = new URLSearchParams(q); const a = p.get('primaryStoreId') || p.get('primary_store_id') || p.get('storeId') || p.get('store_id'); const b = p.get('secondaryStoreId') || p.get('secondary_store_id'); if (a && /^\d{4,}$/.test(a) && !pid) pid = a; if (b && /^\d{4,}$/.test(b) && !secid) secid = b; }
+    } catch (e) { /* ignore */ }
+    if (!pid) { const m = str.match(/(?:"primaryStoreId"|"primary_store_id"|"storeId"|"store_id")\s*[:=]\s*"?(\d{4,})"?/i); if (m) pid = m[1]; }
+    if (!secid) { const m = str.match(/(?:"secondaryStoreId"|"secondary_store_id")\s*[:=]\s*"?(\d{4,})"?/i); if (m) secid = m[1]; }
+    if (!sid) { const m = str.match(/(?:"storeId"|"store_id")\s*[:=]\s*"?(\d{4,})"?/i); if (m) sid = m[1]; }
+  };
+  try { fromStr(location.search); fromStr(location.hash); fromStr(location.href); } catch (e) { /* ignore */ }
+  try { const es = performance.getEntries(); for (let i = es.length - 1; i >= 0; i--) { if (pid && secid) break; const u = es[i] && es[i].name; if (u && /storeId|store_id|primaryStoreId|secondaryStoreId|instamart/i.test(u)) fromStr(u); } } catch (e) { /* ignore */ }
+  try { ['__INITIAL_STATE__', '___INITIAL_STATE__', '__SWIGGY_GLOBAL__', '__PRELOADED_STATE__'].forEach(k => { if (pid && secid) return; const s = W[k]; if (s) fromStr(typeof s === 'string' ? s : JSON.stringify(s)); }); } catch (e) { /* ignore */ }
+  try { ['localStorage', 'sessionStorage'].forEach(sn => { if (pid && secid) return; const st = W[sn]; if (st && st.length) for (let i = 0; i < st.length; i++) { try { fromStr(st.getItem(st.key(i))); } catch (e) { /* ignore */ } } }); } catch (e) { /* ignore */ }
+  if ((!pid || !secid) && allowPrompt) {
+    try { const manual = prompt('Could not auto-detect store ID. Paste your storeId (or storeId,secondaryStoreId):', ''); if (manual) { const parts = manual.split(',').map(s => s.trim()); if (parts[0]) pid = parts[0]; if (parts[1]) secid = parts[1]; } } catch (e) { /* ignore */ }
   }
+  return { sid: sid || pid || '', pid: pid || '', secid: secid || '' };
+}
+// Instamart request with retry: 429/403/5xx back off exponentially (2s, 4s,
+// 8s + jitter), up to 3 attempts. Returns parsed JSON or null.
+async function apiRequest(url, method, body, attempt) {
+  attempt = attempt || 0;
+  const headers = { accept: '*/*', 'accept-language': 'en-US,en;q=0.9', 'content-type': 'application/json', matcher: imMatcher(), 'x-build-version': imBuildVersion(), 'x-device-id': imDeviceId() };
+  try {
+    const opts = { method: method || 'GET', headers, credentials: 'include' };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await W.fetch(url, opts);
+    imLastStatus = res.status;
+    let json = null; try { json = await res.json(); } catch (e) { /* ignore */ }
+    const limited = res.status === 429 || res.status === 403 || (json && (json.statusCode === 429 || json.statusCode === 403 || json.status === 429 || json.status === 403));
+    if (limited) {
+      imRateLimited = true;
+      if (attempt >= 2) return null;
+      await sleep(2000 * Math.pow(2, attempt) + Math.floor(Math.random() * 1000));
+      return apiRequest(url, method, body, attempt + 1);
+    }
+    if (res.status >= 500 && attempt < 2) { await sleep(2000 * Math.pow(2, attempt)); return apiRequest(url, method, body, attempt + 1); }
+    if (res.status === 200 && json && json.data) return json;
+    return null;
+  } catch (e) { return null; }
+}
+function extractVariations(node, out) {
+  if (!node || typeof node !== 'object') return;
+  if (node.variations && Array.isArray(node.variations)) { out.push(...node.variations); return; }
+  if (node.displayName && (node.price || node.offerPrice)) { out.push(node); return; }
+  for (const v of Object.values(node)) extractVariations(v, out);
+}
+// One parser for every Instamart shape: API cards, category listings and the
+// page's own initial state. Out-of-stock items are skipped here (the v1
+// walker kept them flagged); a product is kept once, at its lowest price.
+function parseInstamartCards(data, catLabel, subName) {
+  if (!data || !data.data) return [];
+  const variations = [];
+  extractVariations(data.data, variations);
+  if (!variations.length) return [];
+  const out = [], seen = new Map();
+  for (const v of variations) {
+    if (v.inventory && v.inventory.inStock === false) continue;
+    const num = x => x && typeof x === 'object' && x.units != null ? +x.units + (+x.nanos || 0) / 1e9 : parseFloat(x || 0);
+    const mrp = num(v.price && v.price.mrp);
+    const sell = num(v.price && v.price.offerPrice);
+    if (!sell) continue;
+    const name = v.displayName || v.name;
+    if (!name) continue;
+    const disc = mrp > sell ? Math.round((mrp - sell) / mrp * 100) : 0;
+    const qty = v.quantityDescription || v.quantity || '';
+    const imageId = (v.imageIds && v.imageIds[0]) || v.imageId || '';
+    const item = { id: String(v.skuId || v.spinId || v.id || name), title: String(name) + (qty ? ' · ' + qty : ''), brand: String(v.brandName || v.brand || 'Instamart'), price: sell, mrp: mrp < sell ? sell : mrp, disc, save: Math.max(0, (mrp < sell ? sell : mrp) - sell),
+      img: imageId ? 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_360,h_360,c_fit/' + imageId : '',
+      url: 'https://www.swiggy.com/instamart/search?custom_back=true&query=' + encodeURIComponent(name),
+      inStock: true, cat: subName ? catLabel + ' › ' + subName : catLabel };
+    const old = seen.get(item.id);
+    if (!old || item.price < old.price) seen.set(item.id, item);
+  }
+  return [...seen.values()];
+}
+// Backwards-compatible name used by the passive capture install.
+function extract(json, cat) { return parseInstamartCards(json, cat, ''); }
+function imEndpoints(cat, sub, storeIds, pageNo, offset) {
+  const q = 'storeId=' + storeIds.sid + '&primaryStoreId=' + storeIds.pid + '&secondaryStoreId=' + storeIds.secid;
+  const isColl = !!(sub.isCollection || cat.campaignType === 'collection');
+  if (isColl) return { method: 'GET', url: IM_API + '/collection/items?collectionId=' + sub.id + '&isMonetised=true&' + q + '&offset=' + offset + '&serviceLine=INSTAMART', body: null };
+  if (sub.id) return { method: 'POST', url: IM_API + '/category-listing/filter/v2?' + q + '&pageNo=' + pageNo + '&offset=' + offset + '&page_name=category_listing_filter',
+    body: { categoryName: cat.cName, filterName: sub.name, filterId: sub.id, taxonomyType: cat.tType || 'taxonomy 5', items_offset: String(offset === 0 ? 0 : 26), facets: [], sortAttribute: 'discountPercentHighToLow' } };
+  return { method: 'GET', url: IM_API + '/category-listing/v2?categoryName=' + encodeURIComponent(cat.cName) + '&taxonomyType=' + encodeURIComponent(cat.tType) + '&offset=' + offset + '&' + q, body: null };
+}
+async function fetchPage(job, page, ctl) {
+  if (page === 1) { job.storeIds = detectStoreIds(false); job.expand = false; job.p1 = null; }
+  if (ctl.stop) return Object.assign([], { more: false });
+  const storeIds = job.storeIds || detectStoreIds(false);
+  if (!storeIds.pid && !storeIds.sid) { imDiag = { reason: 'no-store', detail: 'no store id detected' }; return Object.assign([], { more: false }); }
+  const cat = job.cat, sub = job.sub;
+  await sleep(150 + Math.random() * 250);
+  if (page === 1) {
+    const ep = imEndpoints(cat, sub, storeIds, 0, 0);
+    let data = await apiRequest(ep.url, ep.method, ep.body);
+    let items = data ? parseInstamartCards(data, cat.name, sub.name) : [];
+    // Fallback endpoint: the plain category listing for the same category.
+    if (!items.length) {
+      const fb = { method: 'GET', url: IM_API + '/category-listing/v2?categoryName=' + encodeURIComponent(cat.cName) + '&taxonomyType=' + encodeURIComponent(cat.tType) + '&offset=0&storeId=' + storeIds.sid + '&primaryStoreId=' + storeIds.pid + '&secondaryStoreId=' + storeIds.secid, body: null };
+      const data2 = await apiRequest(fb.url, fb.method, fb.body);
+      if (data2) items = parseInstamartCards(data2, cat.name, sub.name);
+    }
+    job.p1 = items;
+    // Smart page 2: plenty of items and the last one is still >50% off.
+    if (items.length >= 15 && items[items.length - 1].disc > 50) job.expand = true;
+    if (!items.length) imDiag = { reason: diagnoseInstamartEmpty({ status: imLastStatus, items: 0, hasStore: true, rateLimited: imRateLimited }), detail: 'HTTP ' + imLastStatus };
+    items.more = job.expand;
+    return items;
+  }
+  // Page 2 (only when page 1 earned it).
+  if (!job.expand || !job.p1) return Object.assign([], { more: false });
+  const ep = imEndpoints(cat, sub, storeIds, 1, 1);
+  const data = await apiRequest(ep.url, ep.method, ep.body);
+  const items = data ? parseInstamartCards(data, cat.name, sub.name) : [];
+  items.more = false;
+  return items;
+}
+// ── v2 diagnostics + self-test (Instamart) ──
+function runSelfTest() {
+  const cardsFixture = { data: { cards: [{ card: { variations: [
+    { skuId: 's-1', displayName: 'Test Atta', brandName: 'Test', quantityDescription: '1 kg', price: { mrp: { units: 60 }, offerPrice: { units: 45 } }, imageIds: ['test-atta'], inventory: { inStock: true } },
+    { skuId: 's-2', displayName: 'Test Oil', brandName: 'Test', quantityDescription: '1 L', price: { mrp: { units: 200 }, offerPrice: { units: 120 } }, imageIds: ['test-oil'], inventory: { inStock: true } },
+    { skuId: 's-3', displayName: 'Test Sugar', brandName: 'Test', quantityDescription: '1 kg', price: { mrp: 50, offerPrice: 50 }, imageIds: [], inventory: { inStock: true } },
+    { skuId: 's-4', displayName: 'Test Ghee', brandName: 'Test', quantityDescription: '500 ml', price: { mrp: { units: 340 }, offerPrice: { units: 300 } }, imageIds: ['test-ghee'], inventory: { inStock: false } }
+  ] } }] } };
+  const cards = parseInstamartCards(cardsFixture, 'Test', 'Atta');
+  const listingFixture = JSON.parse('{"data":{"items":[{"displayName":"Test Rice","variations":[{"skuId":"l-1","displayName":"Test Rice","quantityDescription":"1 kg","price":{"mrp":{"units":100},"offerPrice":{"units":70}},"imageIds":["test-rice"],"inventory":{"inStock":true}}]}]}}');
+  const listing = parseInstamartCards(listingFixture, 'Test', 'Rice');
+  const pass = cards.length === 3 && listing.length === 1 && cards[0].disc === 25;
+  return { cards: cards.length, listing: listing.length, pass };
+}
+function toJsonExport(items) {
+  return JSON.stringify(items.map(p => ({ id: p.id, title: p.title, brand: p.brand, category: p.cat, price: p.price, mrp: p.mrp, discountPct: p.disc, saving: +p.save.toFixed(2), inStock: p.inStock, url: p.url, image: p.img })), null, 2);
+}
+// ── end v2 Instamart fetch+parse ──
+
   let scrolling = false;
   function autoScroll() {
     if (scrolling) { scrolling = false; render(); return; }
@@ -81,18 +262,21 @@
     })();
   }
   function captureUI() {
-    return `<div><h4>Capture</h4>
-  <p class="note">This tool reads the product lists Instamart loads while you browse.</p>
-  <p class="note" style="margin-top:10px">Open a category on swiggy.com/instamart, or press <b>Auto-scroll</b> to load more of the current page. Then return here.</p>
-  <p class="note" style="margin-top:10px"><b>${S.products.size}</b> products captured so far.</p></div>
- <button class="btn ${scrolling ? 'stop' : ''}" data-act="autoscroll">${scrolling ? 'Stop scrolling' : 'Auto-scroll page'}</button>`;
+    return `<div><h4>Scan</h4>
+  <p class="note">Hunter calls Instamart's own category APIs from this tab — pick categories and scan. If the APIs answer nothing, it still reads the product lists the page loads while you browse.</p>
+  <p class="note" style="margin-top:10px"><b>${S.products.size}</b> products found so far.</p></div>
+ ${S.scanning ? `<button class="btn stop" data-act="stop">${ic('stop')}Stop scan</button>` : `<button class="btn" data-act="scan">${ic('scan')}Choose & scan</button>`}
+ <button class="btn ghost full" data-act="autoscroll" style="margin-top:8px">${scrolling ? 'Stop scrolling' : 'Auto-scroll this page instead'}</button>
+ <button class="btn ghost full" data-act="selftest" style="margin-top:8px">${ic('check')}Run self-test</button>
+ ${S.selfTest ? `<p class="note" style="margin-top:6px">Self-test: <b>${S.selfTest.pass ? 'PASS' : 'FAIL'}</b> · cards ${S.selfTest.cards}/3 · listing ${S.selfTest.listing}/1</p>` : `<p class="note" style="margin-top:6px">Self-test checks the parsers on sample data, in this tab.</p>`}`;
   }
   const saveSoon = debounce(() => save(), 1200);
   const P = {
     key: 'ims_v1', hostRe: /(^|\.)swiggy\.com$/,
-    defaults: { groups: ['fresh', 'dairy', 'staples'], depth: 2 },
-    jobs: st => { const jobs = []; for (const g of GROUPS) if (st.groups.includes(g.id)) for (const [c, n] of g.subs) jobs.push({ g, name: n }); return jobs; },
-    fetchPage: async () => [],
+    defaults: { groups: ['veg', 'dairy', 'staples'], depth: 2 },
+    workers: 3,
+    jobs: st => { const jobs = []; for (const g of GROUPS) if (st.groups.includes(g.id)) for (const sub of g.subs) jobs.push({ g, cat: g, sub, name: g.name + ' › ' + sub.name }); return jobs; },
+    fetchPage,
     noLocation: () => false, noLocMsg: '',
     locUI: () => '', locInput: () => false,
     install(ingest) {
@@ -137,13 +321,12 @@
 
   // ───────────────────────── State ─────────────────────────
   const S = { products: new Map(), scanning: false, done: 0, total: 0, errors: 0, ctl: { stop: false },
-    q: '', brand: '', cat: '', preset: '', pick: false, tgm: false, favOnly: false, newOnly: false, shown: 60, tab: 'best', panel: false, startedAt: 0 };
+    q: '', brand: '', cat: '', preset: '', pick: false, tgm: false, favOnly: false, newOnly: false, shown: 60, tab: 'best', panel: false, startedAt: 0, selfTest: null };
 
   // ───────────────────────── Scanner ─────────────────────────
   async function scan() {
     if (S.scanning) return;
     if (OFFSITE) { toast('Open ' + PLATFORM + ' to fetch live deals.'); return; }
-    if (typeof captureUI === 'function') { autoScroll(); return; }
     const jobs = P.jobs(store);
     if (!jobs.length) { toast('Pick at least one category'); return; }
     S.scanning = true; S.ctl = { stop: false }; S.done = 0; S.errors = 0; S.total = jobs.length; S.startedAt = Date.now();
@@ -156,7 +339,7 @@
           const fresh = ingest(items);
           scheduleRender();
           // Stop on the last page, or when a page adds nothing and does not promise more.
-          if (items.more === false || (!fresh && items.more !== true)) break;
+          if (items.more === false) break; // v2: a page of already-seen items must not end the scan
         }
       } catch (e) { if (!ctl.stop) S.errors++; }
       S.done++; scheduleRender();
@@ -502,7 +685,6 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
   }
   function openPicker() {
     if (OFFSITE) { toast('Open ' + PLATFORM + ' to fetch live deals.'); return; }
-    if (typeof captureUI === 'function') { autoScroll(); return; }
     if (S.scanning) return;
     sideOpen = false; S.pick = true; render();
   }
@@ -541,7 +723,7 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
   <label class="sw" style="margin-top:16px"><input type="checkbox" data-in="stockOnly" ${store.stockOnly ? 'checked' : ''}> In stock only</label>
   <label class="sw" style="margin-top:10px"><input type="checkbox" data-in="favOnly" ${S.favOnly ? 'checked' : ''}> Saved only</label>
   <label class="sw" style="margin-top:10px"><input type="checkbox" data-in="newOnly" ${S.newOnly ? 'checked' : ''}> New or price dropped</label></div>
- <div><h4>${ic('download', 15)}Export</h4><div class="chips"><button class="chip" data-act="csv">${ic('download', 14)}CSV</button><button class="chip" data-act="copyall">${ic('copy', 14)}Copy top 20</button><button class="chip" data-act="unhide">${ic('eyeoff', 14)}Unhide (${store.hidden.length})</button></div>
+ <div><h4>${ic('download', 15)}Export</h4><div class="chips"><button class="chip" data-act="csv">${ic('download', 14)}CSV</button><button class="chip" data-act="json">${ic('download', 14)}JSON</button><button class="chip" data-act="copyall">${ic('copy', 14)}Copy top 20</button><button class="chip" data-act="unhide">${ic('eyeoff', 14)}Unhide (${store.hidden.length})</button></div>
   <p class="note" style="margin-top:14px"><kbd>/</kbd> search &nbsp;<kbd>S</kbd> scan &nbsp;<kbd>Esc</kbd> close</p></div>
 </aside>`;
   }
@@ -566,7 +748,7 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
       [typeof GM_xmlhttpRequest === 'function' ? true : null, 'Userscript installed', 'Optional. Recommended for reliable Telegram alerts.'],
       [tgReady() ? true : null, 'Telegram connected', 'Optional. Press Telegram in the top bar to connect your bot.']
     ];
-    return `<div class="check"><h3>Before your first ${capture ? 'capture' : 'scan'}</h3>${rows.map(([ok, t, hint]) => `<div class="ck ${ok ? 'ok' : ok === false ? 'no' : 'q'}"><span>${ic(ok ? 'check' : ok === false ? 'x' : 'info', 15)}</span><div><b>${t}</b>${!ok && hint ? `<p>${hint}</p>` : ''}</div></div>`).join('')}<button class="btn" data-act="scan" style="margin-top:16px">${ic('scan')}${capture ? 'Auto-scroll page' : 'Scan deals'}</button></div>`;
+    return `<div class="check"><h3>Before your first ${capture ? 'capture' : 'scan'}</h3>${rows.map(([ok, t, hint]) => `<div class="ck ${ok ? 'ok' : ok === false ? 'no' : 'q'}"><span>${ic(ok ? 'check' : ok === false ? 'x' : 'info', 15)}</span><div><b>${t}</b>${!ok && hint ? `<p>${hint}</p>` : ''}</div></div>`).join('')}<button class="btn" data-act="scan" style="margin-top:16px">${ic('scan')}Scan deals</button></div>`;
   }
   function card(p, fav, qtyMap) {
     const inList = qtyMap[p.id];
@@ -594,6 +776,12 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
  ${rows.map(([c, ps]) => `<section class="sec"><div class="sh"><h3>${esc(c)}</h3><button class="more" data-act="seeall" data-id="${esc(c)}">See all ${ps.length}${ic('ext', 13)}</button></div>
   <div class="hs">${ps.slice(0, 10).map(p => card(p, fav.has(p.id), store.list)).join('')}</div></section>`).join('')}`;
   }
+  function emptyStateHtml() {
+    if (S.scanning) return `<div class="empty"><span class="ei">${ic('scan', 26)}</span><b>Finding the best deals…</b>They appear here as each category comes in.</div>`;
+    if (S.products.size) return `<div class="empty"><span class="ei">${ic('tag', 26)}</span><b>No deals at this discount</b>Lower the minimum discount in the menu.</div>`;
+    const d = imDiagMessage(imDiag.reason || 'category-empty');
+    return `<div class="empty"><span class="ei">${ic('info', 26)}</span><b>${esc(d.title)}</b>${esc(d.hint)}<button class="btn ghost" data-act="selftest" style="margin-top:12px">Run self-test</button></div>`;
+  }
   function mainView() {
     if (OFFSITE) return `<main id="main">${offsiteCard()}</main>`;
     if (!S.products.size && !S.scanning) return `<main id="main">${checklist()}</main>`;
@@ -602,7 +790,7 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
     const head = `<div class="tabs">${tabs.map(([k, l]) => `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-v="${k}">${l}</button>`).join('')}${S.scanning ? `<span class="live">${ic('scan', 14)}Scanning ${S.done}/${S.total}</span>` : ''}</div>`;
     let body;
     if (S.tab === 'best') {
-      body = bestView(list) || `<div class="empty"><span class="ei">${ic(S.scanning ? 'scan' : 'tag', 26)}</span><b>${S.scanning ? 'Finding the best deals…' : 'No deals at this discount'}</b>${S.scanning ? 'They appear here as each category comes in.' : 'Lower the minimum discount in the menu.'}</div>`;
+      body = bestView(list) || emptyStateHtml();
     } else {
       const cats = [...new Set([...S.products.values()].map(p => p.cat.split(' › ')[0]))];
       const fav = new Set(store.favs);
@@ -770,6 +958,8 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
       case 'pclose': S.pick = false; render(); break;
       case 'stop': S.ctl.stop = true; toast('Stopping…'); break;
       case 'autoscroll': if (typeof autoScroll === 'function') autoScroll(); break;
+      case 'selftest': { const r = runSelfTest(); S.selfTest = r; toast(r.pass ? `Self-test PASS · cards ${r.cards}/3 · listing ${r.listing}/1` : 'Self-test FAIL — parsers did not match the sample data'); render(); break; }
+      case 'json': { const a2 = document.createElement('a'); a2.href = URL.createObjectURL(new Blob([toJsonExport(filtered())], { type: 'application/json' })); a2.download = 'instamart-deals.json'; a2.click(); toast('JSON downloaded'); break; }
       case 'tgtest': tgTest(); break;
       case 'bell': case 'tgopen': sideOpen = false; S.pick = false; S.tgm = true; render(); break;
       case 'tgclose': S.tgm = false; render(); break;
@@ -845,7 +1035,7 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
     fabRoot.querySelector('.n').textContent = n ? String(n) : '';
   }
   const api = {
-    show() { fab.style.display = 'none'; host.style.display = 'block'; if (!OFFSITE && !S.scanning && !S.products.size && typeof captureUI !== 'function') setTimeout(openPicker, 300); prevOverflow = document.documentElement.style.overflow; document.documentElement.style.overflow = 'hidden'; render(); },
+    show() { fab.style.display = 'none'; host.style.display = 'block'; if (!OFFSITE && !S.scanning && !S.products.size) setTimeout(openPicker, 300); prevOverflow = document.documentElement.style.overflow; document.documentElement.style.overflow = 'hidden'; render(); },
     hide() { host.style.display = 'none'; document.documentElement.style.overflow = prevOverflow; updateFab(); placeFab(); fab.style.display = 'block'; },
     toggle() { host.style.display === 'none' ? api.show() : api.hide(); }
   };
