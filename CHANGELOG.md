@@ -1,6 +1,7 @@
 # Changelog
 
 ## v2.0.0 — 2026-11-08
+- Fixed (2026-11-09): install button now reads “Swiggy Instamart Deals” instead of the generic “PriceDrop Hunter”, so the dragged bookmark is named after this store instead of colliding with every other tool.
 
 - Fetch layer rewritten: active API scan replaces capture-only mode — collection
   items (GET), category-listing filter (POST, discount high to low), category
