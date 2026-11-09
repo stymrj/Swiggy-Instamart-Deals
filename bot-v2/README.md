@@ -10,7 +10,8 @@ deals to Telegram.
   shape: collection items (GET), category-listing filter (POST, sorted by
   discount high to low), and category listing (GET) as a fallback, with
   `matcher` / `x-build-version` / `x-device-id` headers, exponential
-  backoff on 429/403/5xx, and a smart page 2 when page 1 ends above 50% off.
+  backoff on 429/403/5xx, and a smart page 2 when page 1 looks full (15+
+  items).
 - `src/bot.js` dedupes against `data/posted.json` (a deal is posted once)
   and keeps a price history in `data/prices.json` (`src/priceHistory.js`),
   so messages are tagged **Lowest ever** or **Price drop ₹X → ₹Y** when the

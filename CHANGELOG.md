@@ -2,6 +2,7 @@
 
 ## v2.0.0 — 2026-11-08
 - Fixed (2026-11-09): install button now reads “Swiggy Instamart Deals” instead of the generic “PriceDrop Hunter”, so the dragged bookmark is named after this store instead of colliding with every other tool.
+- Fixed (2026-11-09): highest-discount items no longer vanish before any filter sees them — string prices ("₹1,999"), missing MRP with only a discount field, discounts as 0.9, free (₹0) items, flat-number prices, max-only listings, and out-of-stock clearance items (now kept, flagged inStock:false, instead of dropped at parse) now all parse (regression fixture `fixtures/sample-high-discount.json`, 8/8, 100%-off item sorts first); page 2 is no longer gated on the last item being >50% off — a full first page now earns page 2, since the collection/listing GET endpoints return unsorted order. Same fix mirrored in `bot-v2/`.
 
 - Fetch layer rewritten: active API scan replaces capture-only mode — collection
   items (GET), category-listing filter (POST, discount high to low), category

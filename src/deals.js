@@ -155,9 +155,43 @@ function extractVariations(node, out) {
   if (node.displayName && (node.price || node.offerPrice)) { out.push(node); return; }
   for (const v of Object.values(node)) extractVariations(v, out);
 }
+// Money in any shape the API sends: {units, nanos}, a plain number, or a
+// formatted string ("₹1,999"). Unreadable values are 0, never NaN — NaN used
+// to fail the `if (!sell)` check below and drop the item outright.
+function imMoney(x) {
+  if (x == null) return 0;
+  if (typeof x === 'object') {
+    if (x.units != null) return +x.units + (+x.nanos || 0) / 1e9;
+    return 0;
+  }
+  if (typeof x === 'number') return isFinite(x) ? x : 0;
+  const m = String(x).replace(/,/g, '').match(/\d+(\.\d+)?/);
+  return m ? +m[0] : 0;
+}
+// Discount percent from the payload, in whatever shape it arrives: number 95,
+// string "95" / "95%", or fraction 0.9. Null when absent/unreadable. The
+// parser used to ignore discount fields entirely, so an item whose MRP was
+// missing computed disc 0 and the 30% minimum filter hid it.
+function imDiscPct(v) {
+  if (v == null) return null;
+  let n;
+  if (typeof v === 'number') n = v;
+  else { const m = String(v).match(/\d+(\.\d+)?/); if (!m) return null; n = +m[0]; }
+  if (!isFinite(n)) return null;
+  if (n > 0 && n < 1) n *= 100; // fraction form, e.g. 0.9 = 90%
+  return Math.round(n);
+}
+// Page 2 is worth fetching when page 1 looks full. The old gate also
+// demanded the last item be >50% off — that assumed discount-sorted order,
+// which only the filter POST provides. The collection / listing GET endpoints
+// return unsorted order, so the last item's discount says nothing about
+// page 2, and the deepest discounts sitting there were never fetched.
+function imShouldExpand(items) { return Array.isArray(items) && items.length >= 15; }
 // One parser for every Instamart shape: API cards, category listings and the
-// page's own initial state. Out-of-stock items are skipped here (the v1
-// walker kept them flagged); a product is kept once, at its lowest price.
+// page's own initial state. Out-of-stock items are KEPT, flagged
+// inStock:false — the results tab's "in stock only" toggle decides whether
+// they show; dropping them here hid clearance items (often the deepest
+// discounts) even with the toggle off. A product is kept once, at its lowest price.
 function parseInstamartCards(data, catLabel, subName) {
   if (!data || !data.data) return [];
   const variations = [];
@@ -165,20 +199,30 @@ function parseInstamartCards(data, catLabel, subName) {
   if (!variations.length) return [];
   const out = [], seen = new Map();
   for (const v of variations) {
-    if (v.inventory && v.inventory.inStock === false) continue;
-    const num = x => x && typeof x === 'object' && x.units != null ? +x.units + (+x.nanos || 0) / 1e9 : parseFloat(x || 0);
-    const mrp = num(v.price && v.price.mrp);
-    const sell = num(v.price && v.price.offerPrice);
-    if (!sell) continue;
+    const priceObj = v.price;
+    const isPriceObj = priceObj && typeof priceObj === 'object';
+    const mrp = imMoney(isPriceObj ? priceObj.mrp : undefined);
+    let sell = imMoney(isPriceObj ? priceObj.offerPrice : undefined);
+    let hasSell = isPriceObj && priceObj.offerPrice != null;
+    if (!hasSell && v.offerPrice != null) { sell = imMoney(v.offerPrice); hasSell = true; }
+    if (!hasSell && typeof priceObj === 'number') { sell = imMoney(priceObj); hasSell = true; }
+    const explicit = imDiscPct(v.discountPercent != null ? v.discountPercent : v.discountPercentage != null ? v.discountPercentage : v.discount != null ? v.discount : v.offerPercentage);
+    // No selling price: derive it from MRP + the payload's own discount (a
+    // max-only listing still has a real discount). A ₹0 offer price with an
+    // MRP is a genuine free item, not a missing price.
+    if (!hasSell && mrp > 0 && explicit) sell = +(mrp * (1 - explicit / 100)).toFixed(2);
+    if (!hasSell && sell <= 0) continue; // no selling price, nothing to derive one from
     const name = v.displayName || v.name;
     if (!name) continue;
-    const disc = mrp > sell ? Math.round((mrp - sell) / mrp * 100) : 0;
+    const m = mrp < sell ? sell : mrp;
+    let disc = m > sell ? Math.round((m - sell) / m * 100) : 0;
+    if (!disc && explicit) disc = explicit;
     const qty = v.quantityDescription || v.quantity || '';
     const imageId = (v.imageIds && v.imageIds[0]) || v.imageId || '';
-    const item = { id: String(v.skuId || v.spinId || v.id || name), title: String(name) + (qty ? ' · ' + qty : ''), brand: String(v.brandName || v.brand || 'Instamart'), price: sell, mrp: mrp < sell ? sell : mrp, disc, save: Math.max(0, (mrp < sell ? sell : mrp) - sell),
+    const item = { id: String(v.skuId || v.spinId || v.id || name), title: String(name) + (qty ? ' · ' + qty : ''), brand: String(v.brandName || v.brand || 'Instamart'), price: sell, mrp: m, disc, save: Math.max(0, m - sell),
       img: imageId ? 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_360,h_360,c_fit/' + imageId : '',
       url: 'https://www.swiggy.com/instamart/search?custom_back=true&query=' + encodeURIComponent(name),
-      inStock: true, cat: subName ? catLabel + ' › ' + subName : catLabel };
+      inStock: !(v.inventory && v.inventory.inStock === false), cat: subName ? catLabel + ' › ' + subName : catLabel };
     const old = seen.get(item.id);
     if (!old || item.price < old.price) seen.set(item.id, item);
   }
@@ -212,8 +256,9 @@ async function fetchPage(job, page, ctl) {
       if (data2) items = parseInstamartCards(data2, cat.name, sub.name);
     }
     job.p1 = items;
-    // Smart page 2: plenty of items and the last one is still >50% off.
-    if (items.length >= 15 && items[items.length - 1].disc > 50) job.expand = true;
+    // Smart page 2: a full first page means more pages likely exist. (The
+    // old gate also demanded the last item be >50% off; see imShouldExpand.)
+    if (imShouldExpand(items)) job.expand = true;
     if (!items.length) imDiag = { reason: diagnoseInstamartEmpty({ status: imLastStatus, items: 0, hasStore: true, rateLimited: imRateLimited }), detail: 'HTTP ' + imLastStatus };
     items.more = job.expand;
     return items;
@@ -232,13 +277,17 @@ function runSelfTest() {
     { skuId: 's-1', displayName: 'Test Atta', brandName: 'Test', quantityDescription: '1 kg', price: { mrp: { units: 60 }, offerPrice: { units: 45 } }, imageIds: ['test-atta'], inventory: { inStock: true } },
     { skuId: 's-2', displayName: 'Test Oil', brandName: 'Test', quantityDescription: '1 L', price: { mrp: { units: 200 }, offerPrice: { units: 120 } }, imageIds: ['test-oil'], inventory: { inStock: true } },
     { skuId: 's-3', displayName: 'Test Sugar', brandName: 'Test', quantityDescription: '1 kg', price: { mrp: 50, offerPrice: 50 }, imageIds: [], inventory: { inStock: true } },
-    { skuId: 's-4', displayName: 'Test Ghee', brandName: 'Test', quantityDescription: '500 ml', price: { mrp: { units: 340 }, offerPrice: { units: 300 } }, imageIds: ['test-ghee'], inventory: { inStock: false } }
+    { skuId: 's-4', displayName: 'Test Ghee', brandName: 'Test', quantityDescription: '500 ml', price: { mrp: { units: 340 }, offerPrice: { units: 300 } }, imageIds: ['test-ghee'], inventory: { inStock: false } },
+    // Highest-discount shape (2026-11-09 fix): string prices — used to be
+    // dropped outright, and the out-of-stock item above is now kept flagged.
+    { skuId: 's-5', displayName: 'Test HD Oil', brandName: 'Test', quantityDescription: '1 L', price: { mrp: '₹1,000', offerPrice: '₹100' }, imageIds: ['test-hd-oil'], inventory: { inStock: true } }
   ] } }] } };
   const cards = parseInstamartCards(cardsFixture, 'Test', 'Atta');
   const listingFixture = JSON.parse('{"data":{"items":[{"displayName":"Test Rice","variations":[{"skuId":"l-1","displayName":"Test Rice","quantityDescription":"1 kg","price":{"mrp":{"units":100},"offerPrice":{"units":70}},"imageIds":["test-rice"],"inventory":{"inStock":true}}]}]}}');
   const listing = parseInstamartCards(listingFixture, 'Test', 'Rice');
-  const pass = cards.length === 3 && listing.length === 1 && cards[0].disc === 25;
-  return { cards: cards.length, listing: listing.length, pass };
+  const hi = Math.max.apply(null, cards.map(c => c.disc));
+  const pass = cards.length === 5 && listing.length === 1 && cards[0].disc === 25 && hi === 90;
+  return { cards: cards.length, listing: listing.length, hi, pass };
 }
 function toJsonExport(items) {
   return JSON.stringify(items.map(p => ({ id: p.id, title: p.title, brand: p.brand, category: p.cat, price: p.price, mrp: p.mrp, discountPct: p.disc, saving: +p.save.toFixed(2), inStock: p.inStock, url: p.url, image: p.img })), null, 2);
@@ -268,7 +317,7 @@ function toJsonExport(items) {
  ${S.scanning ? `<button class="btn stop" data-act="stop">${ic('stop')}Stop scan</button>` : `<button class="btn" data-act="scan">${ic('scan')}Choose & scan</button>`}
  <button class="btn ghost full" data-act="autoscroll" style="margin-top:8px">${scrolling ? 'Stop scrolling' : 'Auto-scroll this page instead'}</button>
  <button class="btn ghost full" data-act="selftest" style="margin-top:8px">${ic('check')}Run self-test</button>
- ${S.selfTest ? `<p class="note" style="margin-top:6px">Self-test: <b>${S.selfTest.pass ? 'PASS' : 'FAIL'}</b> · cards ${S.selfTest.cards}/3 · listing ${S.selfTest.listing}/1</p>` : `<p class="note" style="margin-top:6px">Self-test checks the parsers on sample data, in this tab.</p>`}`;
+ ${S.selfTest ? `<p class="note" style="margin-top:6px">Self-test: <b>${S.selfTest.pass ? 'PASS' : 'FAIL'}</b> · cards ${S.selfTest.cards}/5 · listing ${S.selfTest.listing}/1</p>` : `<p class="note" style="margin-top:6px">Self-test checks the parsers on sample data, in this tab.</p>`}`;
   }
   const saveSoon = debounce(() => save(), 1200);
   const P = {
@@ -958,7 +1007,7 @@ kbd{border:1px solid var(--bd);border-radius:5px;padding:0 5px;font-size:11px;fo
       case 'pclose': S.pick = false; render(); break;
       case 'stop': S.ctl.stop = true; toast('Stopping…'); break;
       case 'autoscroll': if (typeof autoScroll === 'function') autoScroll(); break;
-      case 'selftest': { const r = runSelfTest(); S.selfTest = r; toast(r.pass ? `Self-test PASS · cards ${r.cards}/3 · listing ${r.listing}/1` : 'Self-test FAIL — parsers did not match the sample data'); render(); break; }
+      case 'selftest': { const r = runSelfTest(); S.selfTest = r; toast(r.pass ? `Self-test PASS · cards ${r.cards}/5 · listing ${r.listing}/1` : 'Self-test FAIL — parsers did not match the sample data'); render(); break; }
       case 'json': { const a2 = document.createElement('a'); a2.href = URL.createObjectURL(new Blob([toJsonExport(filtered())], { type: 'application/json' })); a2.download = 'instamart-deals.json'; a2.click(); toast('JSON downloaded'); break; }
       case 'tgtest': tgTest(); break;
       case 'bell': case 'tgopen': sideOpen = false; S.pick = false; S.tgm = true; render(); break;

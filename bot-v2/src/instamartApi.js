@@ -47,20 +47,62 @@ function extractVariations(node, out) {
   if (node.displayName && (node.price || node.offerPrice)) { out.push(node); return; }
   for (const v of Object.values(node)) extractVariations(v, out);
 }
-const num = x => x && typeof x === 'object' && x.units != null ? +x.units + (+x.nanos || 0) / 1e9 : parseFloat(x || 0);
+// Money in any shape the API sends: {units, nanos}, a plain number, or a
+// formatted string ("₹1,999"). Unreadable values are 0, never NaN — same fix
+// as the bookmarklet: NaN used to fail the sell check and drop the item.
+const money = x => {
+  if (x == null) return 0;
+  if (typeof x === 'object') {
+    if (x.units != null) return +x.units + (+x.nanos || 0) / 1e9;
+    return 0;
+  }
+  if (typeof x === 'number') return isFinite(x) ? x : 0;
+  const m = String(x).replace(/,/g, '').match(/\d+(\.\d+)?/);
+  return m ? +m[0] : 0;
+};
+// Discount percent from the payload, in whatever shape it arrives: number 95,
+// string "95" / "95%", or fraction 0.9. Null when absent/unreadable.
+const discPct = v => {
+  if (v == null) return null;
+  let n;
+  if (typeof v === 'number') n = v;
+  else { const m = String(v).match(/\d+(\.\d+)?/); if (!m) return null; n = +m[0]; }
+  if (!isFinite(n)) return null;
+  if (n > 0 && n < 1) n *= 100; // fraction form, e.g. 0.9 = 90%
+  return Math.round(n);
+};
+// Page 2 is worth fetching when page 1 looks full. The old gate also
+// demanded the last item be >50% off — that assumed discount-sorted order,
+// which only the filter POST provides; the collection / listing GET endpoints
+// return unsorted order, so the deepest discounts on page 2 were never fetched.
+function imShouldExpand(items) { return Array.isArray(items) && items.length >= 15; }
 function parseItems(data, catLabel, subName) {
   if (!data || !data.data) return [];
   const variations = [];
   extractVariations(data.data, variations);
   const seen = new Map();
   for (const v of variations) {
-    if (v.inventory && v.inventory.inStock === false) continue;
-    const mrp = num(v.price && v.price.mrp), sell = num(v.price && v.price.offerPrice);
-    if (!sell || !v.displayName) continue;
+    const priceObj = v.price;
+    const isPriceObj = priceObj && typeof priceObj === 'object';
+    const mrp = money(isPriceObj ? priceObj.mrp : undefined);
+    let sell = money(isPriceObj ? priceObj.offerPrice : undefined);
+    let hasSell = isPriceObj && priceObj.offerPrice != null;
+    if (!hasSell && v.offerPrice != null) { sell = money(v.offerPrice); hasSell = true; }
+    if (!hasSell && typeof priceObj === 'number') { sell = money(priceObj); hasSell = true; }
+    const explicit = discPct(v.discountPercent != null ? v.discountPercent : v.discountPercentage != null ? v.discountPercentage : v.discount != null ? v.discount : v.offerPercentage);
+    // No selling price: derive it from MRP + the payload's own discount.
+    // A ₹0 offer price with an MRP is a genuine free item, not a missing price.
+    if (!hasSell && mrp > 0 && explicit) sell = +(mrp * (1 - explicit / 100)).toFixed(2);
+    if (!hasSell && sell <= 0) continue; // no selling price, nothing to derive one from
+    if (!v.displayName) continue;
     const m = mrp < sell ? sell : mrp;
-    const disc = m > sell ? Math.round((m - sell) / m * 100) : 0;
+    let disc = m > sell ? Math.round((m - sell) / m * 100) : 0;
+    if (!disc && explicit) disc = explicit;
     const imageId = (v.imageIds && v.imageIds[0]) || v.imageId || '';
-    const item = { id: String(v.skuId || v.spinId || v.id || v.displayName), title: String(v.displayName) + (v.quantityDescription ? ' · ' + v.quantityDescription : ''), brand: String(v.brandName || v.brand || 'Instamart'), price: sell, mrp: m, disc, save: +(m - sell).toFixed(2), img: imageId ? 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_450,h_450,c_fit/' + imageId : '', url: 'https://www.swiggy.com/instamart/search?custom_back=true&query=' + encodeURIComponent(v.displayName), inStock: true, cat: subName ? catLabel + ' › ' + subName : catLabel };
+    // Out-of-stock items are kept, flagged inStock:false (bot.js only posts
+    // in-stock deals, so alerts are unaffected); dropping them here hid
+    // clearance items from the price history entirely.
+    const item = { id: String(v.skuId || v.spinId || v.id || v.displayName), title: String(v.displayName) + (v.quantityDescription ? ' · ' + v.quantityDescription : ''), brand: String(v.brandName || v.brand || 'Instamart'), price: sell, mrp: m, disc, save: +(m - sell).toFixed(2), img: imageId ? 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_450,h_450,c_fit/' + imageId : '', url: 'https://www.swiggy.com/instamart/search?custom_back=true&query=' + encodeURIComponent(v.displayName), inStock: !(v.inventory && v.inventory.inStock === false), cat: subName ? catLabel + ' › ' + subName : catLabel };
     const old = seen.get(item.id);
     if (!old || item.price < old.price) seen.set(item.id, item);
   }
@@ -83,7 +125,7 @@ async function fetchSubcategory(cat, sub, store) {
     const data2 = await apiRequest(fb.url, fb.method, fb.body);
     if (data2) items = parseItems(data2, cat.name, sub.name);
   }
-  if (items.length >= 15 && items[items.length - 1].disc > 50) {
+  if (imShouldExpand(items)) {
     await sleep(150);
     const ep2 = endpoints(cat, sub, store, 1, 1);
     const data2 = await apiRequest(ep2.url, ep2.method, ep2.body);
@@ -91,4 +133,4 @@ async function fetchSubcategory(cat, sub, store) {
   }
   return items;
 }
-module.exports = { fetchSubcategory, parseItems, apiRequest };
+module.exports = { fetchSubcategory, parseItems, apiRequest, imShouldExpand };

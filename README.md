@@ -39,8 +39,19 @@ no account.
 - **It tells you why 0 results.** The empty screen diagnoses no store
   detected / rate-limited / session expired / empty category, and a **Run
   self-test** button checks the parsers on sample data in the tab.
-- **Smart page 2.** When page 1 ends above 50% off with 15+ items, page 2
-  is fetched automatically.
+- **Smart page 2.** When page 1 looks full (15+ items), page 2 is fetched
+  automatically — the last item's discount is not the trigger, because the
+  collection/listing endpoints return unsorted order.
+- **Highest discounts no longer vanish (2026-11-09).** The parser used to
+  drop the deepest-discount items before any filter saw them: prices sent as
+  formatted strings ("₹1,999"), items with no MRP and only a discount field,
+  discounts sent as 0.9, free (₹0) items, flat-number prices, max-only
+  listings, and out-of-stock clearance items (now kept, flagged, with the
+  stock toggle deciding visibility). Page 2 is also no longer gated on the
+  last item being >50% off — that assumed discount-sorted order, which the
+  collection/listing GET endpoints don't provide, so a full first page now
+  earns page 2 (see `fixtures/sample-high-discount.json`, 8/8, 100%-off
+  first).
 - **Bot with a memory.** `bot-v2/` runs 8 campaigns (fresh, grocery,
   treats, munchies, beverages, personal, lifestyle, NOICE), dedupes, and
   keeps a price history so alerts say "Lowest ever" / "Price drop ₹X →
