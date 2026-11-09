@@ -35,7 +35,7 @@ no account.
   (kept from v1). A page of already-seen items no longer ends a scan
   early (that was the blank-results bug).
 - **Retry with backoff.** 429/403/5xx responses retry exponentially
-  (2s, 4s, 8s + jitter, max 3 attempts) instead of failing silently.
+  (2s, 4s + jitter, max 3 attempts) instead of failing silently.
 - **It tells you why 0 results.** The empty screen diagnoses no store
   detected / rate-limited / session expired / empty category, and a **Run
   self-test** button checks the parsers on sample data in the tab.
@@ -71,7 +71,7 @@ no account.
 **Bookmarklet (mobile).** On the install page, tap **Copy mobile loader**.
 It is a bookmark of about 380 characters that loads the latest version from
 GitHub Pages. Create a bookmark named **Swiggy Instamart Deals**, paste it as the address, and run it from
-the address bar on swiggy.com. The full bookmarklet (about 64 KB, no network
+the address bar on swiggy.com. The full bookmarklet (about 65 KB, no network
 needed) is in `dist/bookmarklet.txt`.
 
 **Userscript.** Install `dist/instamart-deals.user.js` in Tampermonkey or
@@ -107,10 +107,46 @@ only in your browser.
 
 ## Bot setup (scheduled Telegram alerts)
 
-`bot-v2/` is a separate Node bot (no dependencies, Node 18+). It needs your
-own Swiggy session cookie and dark-store ids — see `bot-v2/README.md` and
-`bot-v2/.env.example`. Without them the APIs return nothing and the bot
-posts nothing. Run it on cron for scheduled runs.
+`bot-v2/` is a separate Node bot (no dependencies, Node 18+) that also runs
+on its own, without a browser, on GitHub Actions — see
+`.github/workflows/telegram-bot.yml`. Every 30 minutes (08:31–00:01 IST) it
+runs the 8 campaigns, compares with the previous run, and sends new deals
+to Telegram. It needs your own Swiggy session cookie and dark-store ids —
+see `bot-v2/README.md` and `bot-v2/.env.example`.
+
+1. Fork [github.com/stymrj/Swiggy-Instamart-Deals](https://github.com/stymrj/Swiggy-Instamart-Deals).
+2. Create a bot with `@BotFather` (`TELEGRAM_BOT_TOKEN`) and get your chat
+   ID from `@userinfobot` (`TELEGRAM_CHAT_ID`).
+3. On swiggy.com/instamart while logged in, copy the Cookie header from
+   DevTools → Network (`SWIGGY_COOKIE`), and note your dark-store ids from
+   the page (URL / page state): `SWIGGY_STORE_ID` and
+   `SWIGGY_PRIMARY_STORE_ID` (at least the primary id is required),
+   `SWIGGY_SECONDARY_STORE_ID` if shown.
+4. In your fork, add the token, chat ID and cookie as **Secrets** and the
+   store ids as **Variables** (Settings → Secrets and variables → Actions),
+   and set the **Variable** `BOT_ENABLED` = `true`.
+5. In **Actions**, enable workflows, run **Telegram deal alerts** with
+   **Print the messages instead of sending them** ticked to preview, then
+   run it again for real.
+
+Optional variables: `MIN_DISCOUNT` (default 70 — a floor over the
+per-campaign minimums in `bot-v2/config.json`), `SWIGGY_DEVICE_ID`,
+`SWIGGY_BUILD_VERSION` (default 2.363.0).
+
+Local run: `cp bot-v2/.env.example bot-v2/.env`, then
+`node bot-v2/src/bot.js --dry-run` (prints, sends nothing, saves no state)
+or `node bot-v2/src/bot.js`. Node 18+, no `npm install` needed.
+
+Dedupe (`bot-v2/data/posted.json`) and price history
+(`bot-v2/data/prices.json`) persist between scheduled runs through the
+Actions cache — if the cache is ever lost, the bot may re-post deals it
+already sent. A dry run never writes either file.
+
+A session cookie works like your password for that site. Keep it only in
+GitHub **Secrets** or your local `.env` (already in `.gitignore`), never in
+a commit or an issue. If one ever leaks, log out of all devices on Swiggy
+to cancel it. Cookies expire; when the bot reports that Swiggy refused the
+session, copy a fresh one.
 
 ## Troubleshooting
 
@@ -124,21 +160,32 @@ posts nothing. Run it on cron for scheduled runs.
 - **Still stuck?** Press **Run self-test** in the sidebar: it checks the
   parsers on sample data. If it passes, the problem is the live session,
   store or location, not the code.
+- **Scheduled bot posts nothing / 403 in the Actions log.** The session
+  cookie expired, or Swiggy rate-limited the GitHub IP — copy a fresh
+  `SWIGGY_COOKIE` into Secrets and wait for the next run. The run now fails
+  loudly on a missing cookie instead of staying green.
+- **Scheduled runs never start.** Set the repository variable
+  `BOT_ENABLED` to `true` (Settings → Secrets and variables → Actions →
+  Variables). Manual workflow runs always work, even with the variable off.
+- **Bot run fails "no store ids".** The `SWIGGY_PRIMARY_STORE_ID` variable
+  is missing — copy it from your swiggy.com/instamart tab (step 3 above).
 - Swiggy can change its APIs at any time; the listing fallback and the
   loose variation parser are there to survive small changes.
 
 ## Testing
 
 ```bash
-node test-results-tab.js            # parser regression: 8 sample products must render as 8 cards
+node test-results-tab.js            # parser regression: 9 sample products must render as 9 cards
+node test-bookmark-name.js          # install button reads "Swiggy Instamart Deals" in template + built page
 node bot-v2/test-price-history.js   # bot price-history: drops + lowest-ever
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/telegram-bot.yml'))"   # workflow parses
 node build.js                       # rebuilds dist/ and index.html
 ```
 
 The regression test loads the real parsers from `src/deals.js` and feeds
-them an Instamart cards payload (`fixtures/sample-api.json`, 6 of 8
-variations) and a category-listing payload (`fixtures/sample-listing.json`,
-2 items), plus the self-test and diagnostics checks. Live Swiggy APIs are
+them an Instamart cards payload (`fixtures/sample-api.json`, 7 cards) and a
+category-listing payload (`fixtures/sample-listing.json`, 2 items), plus the
+self-test and diagnostics checks. Live Swiggy APIs are
 **not** verified by these tests — they need a manual browser test on
 swiggy.com/instamart.
 
@@ -149,6 +196,7 @@ src/deals.js         the app (one file, no dependencies)
 src/index.tpl.html   install page template
 build.js             builds dist/ and index.html
 bot-v2/              Telegram bot (Instamart API client, campaigns, price history)
+.github/workflows/   telegram-bot.yml (every 30 minutes, 08:31–00:01 IST)
 test-results-tab.js  parser regression test
 fixtures/            sample cards + listing payloads
 ```
