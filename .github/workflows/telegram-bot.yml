@@ -47,6 +47,7 @@ jobs:
     steps:
       - name: Check required secrets
         id: check
+        shell: bash
         env:
           SWIGGY_COOKIE: ${{ secrets.SWIGGY_COOKIE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
